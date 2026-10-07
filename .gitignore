@@ -8,3 +8,5 @@ data/
 .env.*
 # local scratch / diagnostics (underscore-prefixed), never committed
 _*
+__pycache__/
+*.pyc

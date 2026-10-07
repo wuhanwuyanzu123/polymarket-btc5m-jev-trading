@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dry-run 盈利曲线 · BTC 5分钟 TWAP 策略</title>
+<style>
+  :root{
+    --surface-1:#fcfcfb; --plane:#f4f4f2;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#84837c;
+    --grid:#e6e6e2; --axis:#c9c8c1;
+    --series-1:#2a78d6;   /* 累计盈亏 */
+    --series-2:#eb6834;   /* 回撤 */
+    --pos:#1baf7a; --neg:#d64545;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:where(:not([data-theme="light"])){
+      --surface-1:#1a1a19; --plane:#232322;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8f8e85;
+      --grid:#2f2f2d; --axis:#45443f;
+      --series-1:#3987e5; --series-2:#d95926;
+      --pos:#199e70; --neg:#e05c5c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 24px 40px;background:var(--plane);color:var(--text-primary);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+  h1{font-size:19px;font-weight:650;margin:0}
+  .sub{color:var(--text-secondary);font-size:13px;margin-top:4px}
+  .card{background:var(--surface-1);border:1px solid var(--grid);border-radius:12px;padding:20px 20px 16px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px}
+  .kpi{background:var(--surface-1);border:1px solid var(--grid);border-radius:12px;padding:14px 16px}
+  .kpi .lab{font-size:12px;color:var(--text-muted);margin-bottom:6px}
+  .kpi .val{font-size:22px;font-weight:640;letter-spacing:-0.01em;font-variant-numeric:tabular-nums}
+  .kpi .note{font-size:12px;color:var(--text-secondary);margin-top:3px}
+  .v-pos{color:var(--pos)} .v-neg{color:var(--neg)}
+  .legend{display:flex;gap:18px;align-items:center;font-size:12.5px;color:var(--text-secondary);margin-bottom:6px;flex-wrap:wrap}
+  .lg{display:flex;gap:7px;align-items:center}
+  .swatch{width:14px;height:3px;border-radius:2px}
+  svg{display:block;width:100%;height:auto}
+  .tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;
+       background:var(--surface-1);border:1px solid var(--axis);border-radius:8px;
+       padding:9px 11px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.13);z-index:9;min-width:150px}
+  .tip .tt{font-weight:640;margin-bottom:5px}
+  .tip .tr{display:flex;justify-content:space-between;gap:14px;color:var(--text-secondary)}
+  .tip .tr b{color:var(--text-primary);font-variant-numeric:tabular-nums}
+  table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+  th,td{text-align:right;padding:6px 10px;border-bottom:1px solid var(--grid)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--text-muted);font-weight:560}
+  details summary{cursor:pointer;color:var(--text-secondary);font-size:13px;padding:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>dry-run 累计盈亏曲线</h1>
+    <div class="sub" id="sub"></div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <div class="legend">
+      <span class="lg"><span class="swatch" style="background:var(--series-1)"></span>累计盈亏（每笔 $5）</span>
+      <span class="lg"><span class="swatch" style="background:var(--series-2)"></span>相对峰值的回撤</span>
+    </div>
+    <svg id="chart" viewBox="0 0 1000 400" role="img" aria-label="dry-run 累计盈亏曲线"></svg>
+  </div>
+
+  <div class="card">
+    <div class="legend" style="margin:0 0 4px">
+      <span class="lg"><span class="swatch" style="background:var(--pos)"></span>赢的钱（押中 → 每份兑 $1）</span>
+      <span class="lg"><span class="swatch" style="background:var(--neg)"></span>输的钱（押错 → 归零）</span>
+    </div>
+    <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px">
+      红色数量远多于绿色，但绿色单笔金额大得多 —— 低价票押中一次就是 6~8 倍回报
+    </div>
+    <svg id="bars" viewBox="0 0 1000 150" role="img" aria-label="每笔盈亏"></svg>
+  </div>
+
+  <div class="card">
+    <details open>
+      <summary>数据表（每 10 笔）</summary>
+      <div id="tablebox" style="margin-top:10px"></div>
+    </details>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script type="module">
+const d = await (await fetch('./drycurve.json')).json();
+const n = d.length;
+const final = d[n-1].cum;
+const peak = Math.max(...d.map(p=>p.cum));
+const maxdd = Math.min(...d.map(p=>p.dd));
+const wins = d.filter(p=>p.win).length;
+const stake = d.length*5;
+
+document.getElementById('sub').textContent =
+  `共 ${n} 笔已结算 · ${d[0].t} → ${d[n-1].t} UTC · 每笔约 $5 · 纸面模拟，未真实下单`;
+
+const kpi = (lab,val,note,cls='') =>
+  `<div class="kpi"><div class="lab">${lab}</div><div class="val ${cls}">${val}</div><div class="note">${note}</div></div>`;
+document.getElementById('kpis').innerHTML =
+  kpi('最终累计', (final>=0?'+$':'-$')+Math.abs(final).toFixed(2), `投入约 $${stake}`, final>=0?'v-pos':'v-neg') +
+  kpi('胜率', (wins/n*100).toFixed(1)+'%', `${wins} 赢 / ${n-wins} 输`) +
+  kpi('峰值', '+$'+peak.toFixed(2), '中途最高点', 'v-pos') +
+  kpi('最大回撤', '-$'+Math.abs(maxdd).toFixed(2), `出现在第 ${d.findIndex(p=>p.dd===maxdd)+1} 笔`, 'v-neg');
+
+/* ---------- 累计曲线 ---------- */
+const W=1000,H=400, P={t:24,r:26,b:38,l:64};
+const iw=W-P.l-P.r, ih=H-P.t-P.b;
+const ys=d.flatMap(p=>[p.cum,p.dd]);
+const y0=Math.min(...ys,0), y1=Math.max(...ys,0);
+const pad=(y1-y0)*0.08; const Y0=y0-pad, Y1=y1+pad;
+const X=i=>P.l+(i-1)/(n-1)*iw;
+const Y=v=>P.t+ih-(v-Y0)/(Y1-Y0)*ih;
+
+/* 取整到人眼友好的刻度（1/2/5 × 10^k） */
+function niceTicks(a,b,target=5){
+  const raw=(b-a)/target, mag=Math.pow(10,Math.floor(Math.log10(raw))), n=raw/mag;
+  const step=(n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*mag;
+  const out=[]; for(let v=Math.ceil(a/step)*step; v<=b+1e-9; v+=step) out.push(Math.abs(v)<step/1e6?0:v);
+  return out;
+}
+let g='';
+for(const v of niceTicks(Y0,Y1,8)){
+  g+=`<line x1="${P.l}" y1="${Y(v).toFixed(1)}" x2="${W-P.r}" y2="${Y(v).toFixed(1)}" stroke="var(--grid)" stroke-width="1"/>`;
+  g+=`<text x="${P.l-10}" y="${(Y(v)+4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--text-muted)" style="font-variant-numeric:tabular-nums">${v>=0?'+':''}${v.toFixed(0)}</text>`;
+}
+const zeroY=Y(0);
+g+=`<line x1="${P.l}" y1="${zeroY.toFixed(1)}" x2="${W-P.r}" y2="${zeroY.toFixed(1)}" stroke="var(--axis)" stroke-width="1.5"/>`;
+for(const i of [1, Math.round(n*0.2), Math.round(n*0.4), Math.round(n*0.6), Math.round(n*0.8), n]){
+  if(i<1||i>n) continue;
+  g+=`<text x="${X(i).toFixed(1)}" y="${H-14}" text-anchor="middle" font-size="11" fill="var(--text-muted)">第${i}笔</text>`;
+}
+const cumLine=d.map((p,k)=>`${k?'L':'M'}${X(p.i).toFixed(1)},${Y(p.cum).toFixed(1)}`).join(' ');
+g+=`<path d="${cumLine} L${X(n).toFixed(1)},${zeroY.toFixed(1)} L${X(1).toFixed(1)},${zeroY.toFixed(1)} Z" fill="var(--series-1)" opacity="0.10"/>`;
+g+=`<path d="${cumLine}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+const ddLine=d.map((p,k)=>`${k?'L':'M'}${X(p.i).toFixed(1)},${Y(p.dd).toFixed(1)}`).join(' ');
+g+=`<path d="${ddLine}" fill="none" stroke="var(--series-2)" stroke-width="1.5" opacity="0.75" stroke-dasharray="4 3"/>`;
+const lastP=d[n-1];
+g+=`<circle cx="${X(lastP.i).toFixed(1)}" cy="${Y(lastP.cum).toFixed(1)}" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"/>`;
+const lblY=Y(lastP.cum)+(lastP.cum<peak?20:-12);
+g+=`<text x="${X(lastP.i)-8}" y="${lblY.toFixed(1)}" text-anchor="end" font-size="12.5" font-weight="640" fill="var(--text-primary)" style="font-variant-numeric:tabular-nums">${final>=0?'+$':'-$'}${Math.abs(final).toFixed(2)}</text>`;
+const pkAt=d.findIndex(p=>p.cum===peak)+1;
+g+=`<circle cx="${X(pkAt).toFixed(1)}" cy="${Y(peak).toFixed(1)}" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"/>`;
+g+=`<text x="${X(pkAt).toFixed(1)}" y="${(Y(peak)-11).toFixed(1)}" text-anchor="middle" font-size="12" fill="var(--text-secondary)" style="font-variant-numeric:tabular-nums">峰值 +$${peak.toFixed(2)}</text>`;
+g+=`<line id="cross" x1="0" y1="${P.t}" x2="0" y2="${P.t+ih}" stroke="var(--text-muted)" stroke-width="1" opacity="0"/>`;
+g+=`<circle id="dot" r="5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" opacity="0"/>`;
+document.getElementById('chart').innerHTML=g;
+
+/* ---------- 每笔盈亏条 ---------- */
+const BW=1000,BH=150,BP={t:14,r:26,b:22,l:64};
+const bw=BW-BP.l-BP.r, bh=BH-BP.t-BP.b;
+const pv=d.map(p=>p.pnl);
+const pmax=Math.max(...pv.map(Math.abs));
+const bx=i=>BP.l+(i-1)/(n-1)*bw;
+const by=v=>BP.t+bh/2-(v/pmax)*(bh/2-3);
+let bgs=`<line x1="${BP.l}" y1="${BP.t+bh/2}" x2="${BW-BP.r}" y2="${BP.t+bh/2}" stroke="var(--axis)" stroke-width="1"/>`;
+for(const p of d){
+  const x=bx(p.i), y=by(p.pnl), h=Math.abs(y-(BP.t+bh/2));
+  bgs+=`<rect x="${(x-1.6).toFixed(1)}" y="${Math.min(y,BP.t+bh/2).toFixed(1)}" width="3.2" height="${Math.max(h,1).toFixed(1)}" rx="1.4" fill="${p.win?'var(--pos)':'var(--neg)'}" opacity="0.85"/>`;
+}
+bgs+=`<text x="${BP.l-10}" y="${(BP.t+bh/2+4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--text-muted)">0</text>`;
+bgs+=`<text x="${BP.l-10}" y="${(by(pmax)+10).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--text-muted)">+$${pmax.toFixed(0)}</text>`;
+bgs+=`<text x="${BP.l-10}" y="${(by(-pmax)).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--text-muted)">-$${pmax.toFixed(0)}</text>`;
+document.getElementById('bars').innerHTML=bgs;
+
+/* ---------- 交互 ---------- */
+const tip=document.getElementById('tip'), cross=document.getElementById('cross'), dot=document.getElementById('dot');
+const svg=document.getElementById('chart');
+svg.addEventListener('mousemove',ev=>{
+  const r=svg.getBoundingClientRect();
+  const px=(ev.clientX-r.left)/r.width*W;
+  let best=1,bd=1e9;
+  for(let i=1;i<=n;i++){const dd=Math.abs(X(i)-px); if(dd<bd){bd=dd;best=i}}
+  const p=d[best-1];
+  cross.setAttribute('x1',X(best)); cross.setAttribute('x2',X(best)); cross.setAttribute('opacity','0.4');
+  dot.setAttribute('cx',X(best)); dot.setAttribute('cy',Y(p.cum)); dot.setAttribute('opacity','1');
+  tip.style.opacity='1';
+  tip.innerHTML=`<div class="tt">第 ${p.i} 笔 · ${p.win?'赢':'输'}</div>
+    <div class="tr"><span>本笔</span><b style="color:${p.win?'var(--pos)':'var(--neg)'}">${p.pnl>=0?'+':''}$${p.pnl.toFixed(2)}</b></div>
+    <div class="tr"><span>累计</span><b>${p.cum>=0?'+':'-'}$${Math.abs(p.cum).toFixed(2)}</b></div>
+    <div class="tr"><span>买价</span><b>${p.entry.toFixed(3)}</b></div>
+    <div class="tr"><span>方向/结果</span><b>${p.side||'?'} → ${p.winner||'?'}</b></div>
+    <div class="tr"><span>时间</span><b>${p.t}</b></div>`;
+  const tx=Math.min(ev.clientX+14, window.innerWidth-190);
+  const ty=Math.min(ev.clientY+14, window.innerHeight-140);
+  tip.style.left=tx+'px'; tip.style.top=ty+'px';
+});
+svg.addEventListener('mouseleave',()=>{tip.style.opacity='0';cross.setAttribute('opacity','0');dot.setAttribute('opacity','0')});
+
+/* ---------- 表格 ---------- */
+let rows='';
+for(let i=0;i<n;i+=10){
+  const p=d[i];
+  rows+=`<tr><td>第 ${p.i} 笔</td><td>${p.cum>=0?'+':'-'}$${Math.abs(p.cum).toFixed(2)}</td><td>${p.dd.toFixed(2)}</td><td>${p.t}</td></tr>`;
+}
+document.getElementById('tablebox').innerHTML =
+ `<table><thead><tr><th>进度</th><th>累计盈亏</th><th>回撤</th><th>时间 (UTC)</th></tr></thead><tbody>${rows}</tbody></table>`;
+</script>
+</body>
+</html>
