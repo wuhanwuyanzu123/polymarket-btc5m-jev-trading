@@ -29,7 +29,15 @@ export type LiveBrokerOpts = {
   signatureType?: number;
 };
 
-const SLIPPAGE = 0.03;
+/**
+ * Worst price allowed on a FOK market order. 0 means "buy at exactly the
+ * quoted ask" — one tick of adverse move and the FOK fails instead of
+ * filling worse. Configurable because it only affects live orders.
+ */
+const SLIPPAGE = Number(process.env.LIVE_SLIPPAGE ?? 0.03);
+if (!Number.isFinite(SLIPPAGE) || SLIPPAGE < 0 || SLIPPAGE > 0.5) {
+  throw new Error(`LIVE_SLIPPAGE must be between 0 and 0.5, got ${process.env.LIVE_SLIPPAGE}`);
+}
 
 function roundPrice(p: number): number {
   return Math.round(p * 100) / 100;

@@ -4,3 +4,7 @@ dist/
 *.log
 .DS_Store
 data/
+.env.live
+.env.*
+# local scratch / diagnostics (underscore-prefixed), never committed
+_*

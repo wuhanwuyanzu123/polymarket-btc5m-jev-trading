@@ -49,6 +49,8 @@ const requoteMs = arg("--requote", 250);
 const stopBefore = arg("--stop", 20);
 const rebateRate = arg("--rebate-rate", 0.2);
 const feeRate = arg("--fee-rate", 0.07);
+/** Skip any buy whose real best ask is below this. */
+const minAsk = arg("--min-ask", 0);
 
 type Side = "UP" | "DOWN";
 type Ev =
@@ -222,6 +224,8 @@ class TakerSim {
     readonly theta: number,
     /** Only buy the side BTC is on vs the window start (the Jev/sign rule). */
     readonly followMove = false,
+    /** Ignore asks cheaper than this (longshot filter). */
+    readonly minAsk = 0,
   ) {}
   decide(t: number, active: Win[]) {
     for (const w of active) {
@@ -236,6 +240,7 @@ class TakerSim {
         if (this.followMove && side !== onSide) continue;
         const ask = this.m.best(asset, "ask");
         if (!ask || ask.p <= 0 || ask.p >= 1) continue;
+        if (ask.p < this.minAsk) continue;
         const fee = takerFeePerShare(ask.p, feeRate);
         const p = side === "UP" ? fair : 1 - fair;
         if (p - ask.p - fee < this.theta) continue;
@@ -316,7 +321,7 @@ async function main(): Promise<void> {
     makers.push(new MakerSim(m, assets, sigma, infoLag, orderLag, d));
   const takers: TakerSim[] = [];
   for (const follow of [false, true])
-    for (const infoLag of infoLags) for (const th of thetas) takers.push(new TakerSim(m, sigma, infoLag, th, follow));
+    for (const infoLag of infoLags) for (const th of thetas) takers.push(new TakerSim(m, sigma, infoLag, th, follow, minAsk));
   if (process.argv.includes("--takers-only")) makers.length = 0;
 
   // Pass 2: replay.

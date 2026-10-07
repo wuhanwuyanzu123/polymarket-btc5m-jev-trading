@@ -15,9 +15,21 @@ async function main(): Promise<void> {
       ? `judge=${s.opinion.side}@${s.opinion.confidence.toFixed(2)} P(UP)=${s.opinion.probs?.UP.toFixed(2) ?? "?"}`
       : "judge=-";
     const btc = s.btc ? `btc=${s.btc.last} (${s.btc.source})` : "btc=-";
+    // Real book quotes for the side the judge picked — the backtest assumes
+    // ask = mid + spread; this records what the book actually charges so the
+    // assumption can be checked against reality.
+    let q = "q=-";
+    if (s.opinion && s.market) {
+      const up = s.opinion.side === "UP";
+      const bid = up ? s.market.upBid : s.market.downBid;
+      const ask = up ? s.market.upAsk : s.market.downAsk;
+      const mid = up ? s.market.upMid : s.market.downMid;
+      const gap = ask != null && mid != null ? ask - mid : null;
+      q = `q=${s.opinion.side} bid=${bid ?? "-"} ask=${ask ?? "-"} mid=${mid ?? "-"} ask-mid=${gap != null ? gap.toFixed(4) : "-"}`;
+    }
     const last = s.decisionLog.at(-1);
     console.log(
-      [s.at.slice(11, 19), s.market?.slug ?? "-", `${s.secondsRemaining ?? "?"}s`, btc, op,
+      [s.at.slice(11, 19), s.market?.slug ?? "-", `${s.secondsRemaining ?? "?"}s`, btc, op, q,
        `pos=${s.position.kind === "open" ? `${s.position.side}x${s.position.size}@${s.position.entryPrice}` : "flat"}`,
        last?.summary ?? "", `pnl=${s.cumulativePnLUsd}`].join(" | "),
     );
